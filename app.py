@@ -55,7 +55,17 @@ def _load_heavy(key, loader_fn):
         gc.collect()
 
     with st.spinner(f"Loading {key} (evicting any other heavy model first)..."):
-        resource = loader_fn()
+        try:
+            resource = loader_fn()
+        except Exception as e:
+            st.error(
+                f"Failed to load **{key}**: `{type(e).__name__}: {e}`\n\n"
+                "This is usually a missing dependency (e.g. `accelerate`), "
+                "a network/download timeout on the free tier, or a memory "
+                "limit hit during model deserialization. Check the "
+                "'Manage app' logs for the full traceback, then retry."
+            )
+            st.stop()
 
     st.session_state["_heavy_model_slot"] = (key, resource)
     return resource
