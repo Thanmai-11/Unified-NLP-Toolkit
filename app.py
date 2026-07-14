@@ -446,19 +446,60 @@ with tabs[4]:
 # ---------------------------------------------------------------------------
 with tabs[5]:
     st.header("Distributional Semantics")
-    st.write("Static embeddings (GloVe, via gensim) vs. contextual embeddings (BERT).")
+    st.write("Static embeddings (GloVe) vs. contextual embeddings (BERT).")
 
-    @st.cache_resource(show_spinner="Loading GloVe vectors (50d)...")
+    @st.cache_resource(show_spinner="Downloading + loading GloVe vectors (50d)...")
     def load_glove():
-        import gensim.downloader as api
-        return api.load("glove-wiki-gigaword-50")
+        import gzip
+        import io
+        import urllib.request
+        import numpy as np
+
+        # Same underlying pretrained file gensim's downloader fetches
+        # (Wikipedia 2014 + Gigaword 5, 400K vocab, 50d), loaded here
+        # directly so the app doesn't depend on the gensim package.
+        url = (
+            "https://github.com/RaRe-Technologies/gensim-data/releases/"
+            "download/glove-wiki-gigaword-50/glove-wiki-gigaword-50.gz"
+        )
+        with urllib.request.urlopen(url) as resp:
+            raw = resp.read()
+
+        words, vecs = [], []
+        with gzip.open(io.BytesIO(raw), "rt", encoding="utf-8") as f:
+            next(f)  # header line: "<num_vectors> <dim>"
+            for line in f:
+                parts = line.rstrip().split(" ")
+                words.append(parts[0])
+                vecs.append(np.asarray(parts[1:], dtype=np.float32))
+
+        matrix = np.vstack(vecs)
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-9
+        unit = matrix / norms
+        key_to_index = {w: i for i, w in enumerate(words)}
+        return {"words": words, "unit": unit, "key_to_index": key_to_index}
+
+    def glove_most_similar(glove, word, topn=5):
+        import numpy as np
+        idx = glove["key_to_index"][word]
+        sims = glove["unit"] @ glove["unit"][idx]
+        top_idx = np.argsort(-sims)
+        results = []
+        for i in top_idx:
+            if i == idx:
+                continue
+            results.append((glove["words"][i], round(float(sims[i]), 4)))
+            if len(results) >= topn:
+                break
+        return results
 
     if st.button("Load GloVe + visualize nearest neighbours"):
         glove = load_glove()
         all_text_tokens = [t.lower() for t in word_tokenize(text_input) if t.isalpha()]
-        query_words = [w for w in dict.fromkeys(all_text_tokens) if w in glove.key_to_index][:8]
+        query_words = [w for w in dict.fromkeys(all_text_tokens) if w in glove["key_to_index"]][:8]
         for w in query_words:
-            sims = glove.most_similar(w, topn=5)
+            sims = glove_most_similar(glove, w, topn=5)
             st.write(f"**{w}** → {sims}")
 
     if st.button("Compare with BERT contextual embedding (same word, two contexts)"):
@@ -502,20 +543,29 @@ with tabs[6]:
 # ---------------------------------------------------------------------------
 with tabs[7]:
     st.header("Topic Modeling")
-    st.write("LDA (gensim), trained live on the sentences of the input text.")
+    st.write("LDA (scikit-learn), trained live on the sentences of the input text.")
     from nltk.tokenize import sent_tokenize
     docs = [
         [w.lower() for w in word_tokenize(s) if w.isalpha() and w.lower() not in sw]
         for s in sent_tokenize(text_input)
     ]
     if len(docs) >= 2:
-        from gensim import corpora, models
-        dictionary = corpora.Dictionary(docs)
-        corpus = [dictionary.doc2bow(d) for d in docs]
+        from sklearn.feature_extraction.text import CountVectorizer
+        from sklearn.decomposition import LatentDirichletAllocation
+
+        doc_strings = [" ".join(d) for d in docs]
+        vectorizer = CountVectorizer()
+        dtm = vectorizer.fit_transform(doc_strings)
+        feature_names = vectorizer.get_feature_names_out()
+
         num_topics = st.slider("Number of topics", 2, min(5, len(docs)), 2)
-        lda = models.LdaModel(corpus, num_topics=num_topics, id2word=dictionary, passes=10)
-        for i, topic in lda.print_topics():
-            st.write(f"**Topic {i}:** {topic}")
+        lda = LatentDirichletAllocation(
+            n_components=num_topics, max_iter=10, random_state=42
+        )
+        lda.fit(dtm)
+        for i, topic in enumerate(lda.components_):
+            top_terms = [feature_names[j] for j in topic.argsort()[-8:][::-1]]
+            st.write(f"**Topic {i}:** " + ", ".join(top_terms))
     else:
         st.info("Add more sentences to the input text to fit a topic model.")
 
