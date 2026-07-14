@@ -49,7 +49,7 @@ not required — though it's harmless to run if you prefer it.)
 ### Option B: Run on Google Colab (free GPU)
 ```python
 # Cell 1
-!pip install -q streamlit nltk spacy gensim sumy transformers torch scikit-learn pyngrok
+!pip install -q streamlit nltk spacy sumy transformers torch scikit-learn pyngrok
 !python -m spacy download en_core_web_sm -q
 
 # Cell 2 - upload app.py to Colab's file browser first, then:
@@ -70,7 +70,7 @@ print(public_url)
 3. Click **New app** → pick the repo, branch (`main`), and set
    **Main file path** to `app.py`.
 4. Click **Deploy**. The build takes a few minutes on first run (it's
-   installing torch, transformers, spacy, gensim, etc.) — watch the logs
+   installing torch, transformers, spacy, etc.) — watch the logs
    in the browser.
 5. Once it's live, you get a public URL
    (`https://YOUR-APP-NAME.streamlit.app`) that anyone can open, no login
@@ -124,3 +124,21 @@ breadth. Candidates worth discussing once this is submitted:
 
 Each of these is a multi-month project on its own. Worth a separate
 conversation once the course deliverable is done.
+1. Fork/push this repo to GitHub.
+2. On share.streamlit.io, create a new app pointing at `app.py`.
+3. Under **Advanced settings → Secrets**, add `HF_TOKEN = "hf_your_token_here"`.
+4. Deploy.
+
+See `.gitignore` — secrets are never committed to this repo; see the token's own settings page to generate one.
+
+## Memory design note
+
+Streamlit Community Cloud's free tier caps apps at 1 GB RAM. This app's four largest models (GPT-2, BERT, DistilBERT-SST2, DistilBART-CNN) would need roughly 2.5–2.8 GB combined if all cached at once, so only one of the four stays resident in memory at a time — loading a different one evicts whichever was previously loaded. A sidebar indicator shows which model is currently loaded. This affects memory usage only, not model outputs.
+
+## Scope
+
+This project demonstrates a full-pipeline comparison across a standard NLP syllabus; it is not, on its own, a novel research contribution. See the accompanying report for a discussion of where classical methods hold up against Transformer baselines and where they don't, along with proposed directions (hybrid symbolic-Transformer pipelines, efficiency-vs-accuracy profiling, attention/dependency correlation studies) for extending this into original research.
+
+## License
+
+MIT
