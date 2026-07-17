@@ -64,6 +64,26 @@ _HF_TRANSIENT_ERRORS = (
 )
 
 
+def _release_memory_to_os():
+    """gc.collect() alone frees Python objects but glibc's malloc often keeps
+    the underlying pages in its arena for reuse rather than returning them to
+    the OS — so RSS can stay high even after a multi-hundred-MB model object
+    is garbage collected. malloc_trim(0) asks glibc to actually hand freed
+    pages back. This matters a lot right before loading the NEXT heavy model
+    on a 1GB-capped box: without it, the freed-but-unreturned memory from the
+    evicted model can still be sitting there when the new model's peak
+    (briefly ~2x its final size, during deserialization) lands on top of it.
+    No-op (silently) on non-glibc platforms (e.g. some Windows/mac libc
+    setups) where this call isn't available.
+    """
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass  # not on glibc/Linux — gc.collect() above is still done
+
+
 def _load_heavy(key, loader_fn, retries=2, backoff_seconds=5):
     slot = st.session_state.get("_heavy_model_slot")
     if slot is not None and slot[0] == key:
@@ -72,7 +92,7 @@ def _load_heavy(key, loader_fn, retries=2, backoff_seconds=5):
     if slot is not None:
         st.session_state.pop("_heavy_model_slot", None)
         del slot
-        gc.collect()
+        _release_memory_to_os()
 
     last_err = None
     with st.spinner(f"Loading {key} (evicting any other heavy model first)..."):
@@ -158,12 +178,18 @@ def load_summarizer():
 
 def load_gpt2():
     def _load():
+        # distilgpt2 rather than gpt2: ~330MB vs ~550MB in memory, which
+        # matters a lot on Streamlit Community Cloud's 1GB free-tier cap.
+        # It's a distilled version of GPT-2 (same tokenizer/architecture
+        # family, half the layers), so perplexity numbers will differ
+        # somewhat from "real" GPT-2 — note this if your report cites the
+        # exact figure as GPT-2's.
         from transformers import GPT2LMHeadModel, GPT2TokenizerFast
-        tok = GPT2TokenizerFast.from_pretrained("gpt2")
-        model = GPT2LMHeadModel.from_pretrained("gpt2", low_cpu_mem_usage=True)
+        tok = GPT2TokenizerFast.from_pretrained("distilgpt2")
+        model = GPT2LMHeadModel.from_pretrained("distilgpt2", low_cpu_mem_usage=True)
         model.eval()
         return tok, model
-    return _load_heavy("gpt2", _load)
+    return _load_heavy("distilgpt2", _load)
 
 
 def load_bert():
@@ -201,7 +227,7 @@ st.sidebar.caption(
     else "Heavy model in memory: none yet"
 )
 st.sidebar.caption(
-    "Only one large transformer (GPT-2 / BERT / DistilBERT-SST2 / "
+    "Only one large transformer (DistilGPT-2 / BERT / DistilBERT-SST2 / "
     "DistilBART) stays loaded at a time to fit the 1 GB free-tier memory "
     "limit — switching tabs that use a different one will trigger a "
     "reload."
@@ -335,7 +361,7 @@ with tabs[1]:
 # ---------------------------------------------------------------------------
 with tabs[2]:
     st.header("Language Modeling")
-    st.write("Bigram model (Laplace-smoothed, trained live) vs. pretrained GPT-2 perplexity.")
+    st.write("Bigram model (Laplace-smoothed, trained live) vs. pretrained DistilGPT-2 perplexity.")
 
     from nltk.tokenize import sent_tokenize as sent_tok_lm
 
@@ -437,20 +463,23 @@ with tabs[2]:
     else:
         st.info("Add more text above — need at least one bigram in the held-out portion.")
 
-    if st.button("Compute GPT-2 perplexity (loads pretrained model, inference only)"):
+    if st.button("Compute DistilGPT-2 perplexity (loads pretrained model, inference only)"):
         import torch
         tok, model = load_gpt2()
         enc = tok(text_input, return_tensors="pt")
         with torch.no_grad():
             out = model(**enc, labels=enc["input_ids"])
         gpt2_ppl = math.exp(out.loss.item())
-        st.metric("GPT-2 perplexity on the full text (pretrained, never fine-tuned on it)",
+        st.metric("DistilGPT-2 perplexity on the full text (pretrained, never fine-tuned on it)",
                    f"{gpt2_ppl:.2f}")
         st.caption(
             "Lower perplexity = model assigns higher likelihood to the text. "
-            "GPT-2's score reflects general-domain pretraining and no exposure "
-            "to this specific text — a fair comparison against the bigram "
-            "model's held-out (not overfit) perplexity above."
+            "DistilGPT-2's score reflects general-domain pretraining and no "
+            "exposure to this specific text — a fair comparison against the "
+            "bigram model's held-out (not overfit) perplexity above. "
+            "DistilGPT-2 is a distilled, half-depth version of GPT-2 (used "
+            "here to fit the 1GB free-tier memory cap), so this number will "
+            "differ somewhat from full GPT-2's perplexity on the same text."
         )
 
 # ---------------------------------------------------------------------------
