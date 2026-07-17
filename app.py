@@ -16,6 +16,18 @@ Run locally:      streamlit run app.py
 Run on Colab:      see README.md for the ngrok/localtunnel snippet
 """
 
+import os
+
+# Hard network timeout (seconds) for Hugging Face Hub downloads/reads.
+# Without this, huggingface_hub's underlying `requests` calls have no
+# read-timeout, so if the Hub is merely DEGRADED (slow CDN, partial outage)
+# rather than fully unreachable, a from_pretrained() call can hang
+# indefinitely instead of raising an error that _load_heavy()'s except-block
+# below could catch and surface. Must be set before transformers/
+# huggingface_hub is imported anywhere, since huggingface_hub reads this env
+# var once at import time.
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
+
 import streamlit as st
 import re
 import math
@@ -44,7 +56,15 @@ st.set_page_config(page_title="Unified NLP Toolkit", layout="wide")
 import gc
 
 
-def _load_heavy(key, loader_fn):
+# Substrings that indicate a transient network/Hub problem (worth retrying)
+# rather than a real code or environment problem (not worth retrying).
+_HF_TRANSIENT_ERRORS = (
+    "timed out", "timeout", "connection", "504", "502", "503",
+    "reset by peer", "temporarily unavailable", "max retries exceeded",
+)
+
+
+def _load_heavy(key, loader_fn, retries=2, backoff_seconds=5):
     slot = st.session_state.get("_heavy_model_slot")
     if slot is not None and slot[0] == key:
         return slot[1]  # this model is already resident, reuse it
@@ -54,18 +74,34 @@ def _load_heavy(key, loader_fn):
         del slot
         gc.collect()
 
+    last_err = None
     with st.spinner(f"Loading {key} (evicting any other heavy model first)..."):
-        try:
-            resource = loader_fn()
-        except Exception as e:
-            st.error(
-                f"Failed to load **{key}**: `{type(e).__name__}: {e}`\n\n"
-                "This is usually a missing dependency (e.g. `accelerate`), "
-                "a network/download timeout on the free tier, or a memory "
-                "limit hit during model deserialization. Check the "
-                "'Manage app' logs for the full traceback, then retry."
-            )
-            st.stop()
+        for attempt in range(retries + 1):
+            try:
+                resource = loader_fn()
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                transient = any(s in str(e).lower() for s in _HF_TRANSIENT_ERRORS)
+                if attempt < retries and transient:
+                    time.sleep(backoff_seconds)
+                    continue
+                break
+
+    if last_err is not None:
+        st.error(
+            f"Failed to load **{key}**: `{type(last_err).__name__}: {last_err}`\n\n"
+            "This is usually one of: a missing dependency (e.g. `accelerate`), "
+            "a Hugging Face Hub outage or degraded CDN (check "
+            "status.huggingface.co), or a memory limit hit during model "
+            "deserialization. Downloads now time out after 30s "
+            "(`HF_HUB_DOWNLOAD_TIMEOUT`) and retry twice with backoff, so a "
+            "stalled connection fails here with this message instead of "
+            "hanging silently. Check the 'Manage app' logs for the full "
+            "traceback, then retry."
+        )
+        st.stop()
 
     st.session_state["_heavy_model_slot"] = (key, resource)
     return resource
