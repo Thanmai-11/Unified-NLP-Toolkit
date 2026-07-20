@@ -624,7 +624,7 @@ with tabs[7]:
         [w.lower() for w in word_tokenize(s) if w.isalpha() and w.lower() not in sw]
         for s in sent_tokenize(text_input)
     ]
-    if len(docs) >= 2:
+    if len(docs) >= 3:
         from sklearn.feature_extraction.text import CountVectorizer
         from sklearn.decomposition import LatentDirichletAllocation
 
@@ -637,6 +637,27 @@ with tabs[7]:
         lda = LatentDirichletAllocation(
             n_components=num_topics, max_iter=10, random_state=42
         )
+        lda.fit(dtm)
+        for i, topic in enumerate(lda.components_):
+            top_terms = [feature_names[j] for j in topic.argsort()[-8:][::-1]]
+            st.write(f"**Topic {i}:** " + ", ".join(top_terms))
+    elif len(docs) == 2:
+        # Streamlit's slider requires min_value < max_value strictly; with
+        # exactly 2 sentences, min(5, len(docs)) == 2 == the hardcoded
+        # min_value, which crashes the slider. There's no meaningful range
+        # to offer with only 2 documents anyway, so fit a fixed 2-topic
+        # model instead of showing a slider.
+        from sklearn.feature_extraction.text import CountVectorizer
+        from sklearn.decomposition import LatentDirichletAllocation
+
+        doc_strings = [" ".join(d) for d in docs]
+        vectorizer = CountVectorizer()
+        dtm = vectorizer.fit_transform(doc_strings)
+        feature_names = vectorizer.get_feature_names_out()
+
+        st.caption("Only 2 sentences in the input — fitting a fixed 2-topic "
+                   "model. Add a 3rd sentence to unlock the topic-count slider.")
+        lda = LatentDirichletAllocation(n_components=2, max_iter=10, random_state=42)
         lda.fit(dtm)
         for i, topic in enumerate(lda.components_):
             top_terms = [feature_names[j] for j in topic.argsort()[-8:][::-1]]
